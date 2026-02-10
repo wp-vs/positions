@@ -24,6 +24,7 @@ Thumbs.db
 # Generated reports
 report.html
 *.html
+reports/
 
 # Data files (user positions - don't commit sensitive data)
 positions/data/*.csv

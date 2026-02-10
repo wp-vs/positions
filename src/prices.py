@@ -16,6 +16,7 @@ class PriceData:
     below_9dma: bool
     description: str = ""
     position_size: float | None = None
+    close_date: str | None = None
     error: str | None = None
 
     @property
@@ -73,6 +74,17 @@ def compute_dmas_from_history(
     # Previous close = second-to-last bar
     prev_close = float(close.iloc[-2]) if len(close) >= 2 else last_hist_close
 
+    # Extract the date of the previous close
+    close_date = None
+    if len(close) >= 2:
+        idx = close.index[-2]
+        if hasattr(idx, 'strftime'):
+            close_date = idx.strftime("%d %b")
+    elif len(close) == 1:
+        idx = close.index[-1]
+        if hasattr(idx, 'strftime'):
+            close_date = idx.strftime("%d %b")
+
     # Compute SMAs
     dma_9 = float(close.rolling(window=9).mean().iloc[-1]) if len(close) >= 9 else None
     dma_21 = float(close.rolling(window=21).mean().iloc[-1]) if len(close) >= 21 else None
@@ -90,6 +102,7 @@ def compute_dmas_from_history(
         below_9dma=below_9dma,
         description=description,
         position_size=position_size,
+        close_date=close_date,
     )
 
 

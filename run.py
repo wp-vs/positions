@@ -21,6 +21,7 @@ Usage:
 
 import argparse
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from src.parser import parse_positions_file
@@ -260,10 +261,11 @@ def main():
     output.add_argument(
         "--html",
         nargs="?",
-        const="report.html",
+        const="auto",
         default=None,
         metavar="FILE",
-        help="Save results as styled HTML (default: report.html)",
+        help="Save results as styled HTML to reports/ directory "
+             "(optionally specify a custom filename)",
     )
     output.add_argument(
         "--email",
@@ -292,9 +294,18 @@ def main():
 
     # Output — multiple flags can be combined
     if args.html:
+        reports_dir = Path(__file__).parent / "reports"
+        reports_dir.mkdir(exist_ok=True)
+
+        if args.html == "auto":
+            ts = datetime.now().strftime("%Y-%m-%d_%H%M%S")
+            html_path = reports_dir / f"report_{ts}.html"
+        else:
+            html_path = reports_dir / Path(args.html).name
+
         html = format_html(results)
-        Path(args.html).write_text(html)
-        print(f"HTML report saved to: {args.html}")
+        html_path.write_text(html)
+        print(f"HTML report saved to: {html_path}")
 
     if args.email:
         from src.emailer import send_report

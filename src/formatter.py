@@ -49,6 +49,10 @@ def format_results(results: list[PriceData], use_color: bool = True) -> str:
 
     lines = []
 
+    # Determine close date from results for column header
+    close_dates = [r.close_date for r in results if r.close_date and not r.error]
+    close_label = f"Cls ({close_dates[0]})" if close_dates else "Prev Cls"
+
     # Build header
     parts = []
     parts.append(f"{'Symbol':<8}")
@@ -57,7 +61,7 @@ def format_results(results: list[PriceData], use_color: bool = True) -> str:
     if has_pos:
         parts.append(f"{'Pos':>5}")
     parts.append(f"{'Latest':>9}")
-    parts.append(f"{'Prev Cls':>9}")
+    parts.append(f"{close_label:>12}")
     parts.append(f"{'9 DMA':>9}")
     parts.append(f"{'21 DMA':>9}")
     parts.append(f"{'50 DMA':>9}")
@@ -102,7 +106,7 @@ def format_results(results: list[PriceData], use_color: bool = True) -> str:
         if has_pos:
             row_parts.append(f"{_fmt_pos(r.position_size)}")
         row_parts.append(f"{_fmt_price(r.latest_price)}")
-        row_parts.append(f"{_fmt_price(r.close_price)}")
+        row_parts.append(f"{_fmt_price(r.close_price):>12}")
         row_parts.append(f"{_fmt_price(r.dma_9)}")
         row_parts.append(f"{_fmt_price(r.dma_21)}")
         row_parts.append(f"{_fmt_price(r.dma_50)}")
@@ -147,7 +151,9 @@ def format_results(results: list[PriceData], use_color: bool = True) -> str:
 
 def format_csv(results: list[PriceData]) -> str:
     """Format results as CSV for further processing."""
-    lines = ["Symbol,Name,Position,Latest Price,Prev Close,9 DMA,21 DMA,50 DMA,Below 9 DMA"]
+    close_dates = [r.close_date for r in results if r.close_date and not r.error]
+    close_header = f"Close ({close_dates[0]})" if close_dates else "Prev Close"
+    lines = [f"Symbol,Name,Position,Latest Price,{close_header},9 DMA,21 DMA,50 DMA,Below 9 DMA"]
     for r in results:
         if r.error:
             continue
@@ -185,13 +191,17 @@ def format_html(results: list[PriceData]) -> str:
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    # Determine close date from results for column header
+    close_dates = [r.close_date for r in valid if r.close_date]
+    close_header = f"Close ({close_dates[0]})" if close_dates else "Prev Close"
+
     # Build table headers
     headers = ["Symbol"]
     if has_desc:
         headers.append("Name")
     if has_pos:
         headers.append("Pos")
-    headers.extend(["Latest", "Prev Close", "9 DMA", "21 DMA", "50 DMA", "Status"])
+    headers.extend(["Latest", close_header, "9 DMA", "21 DMA", "50 DMA", "Status"])
 
     header_cells = "".join(f"<th>{h}</th>" for h in headers)
 
