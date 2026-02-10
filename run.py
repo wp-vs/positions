@@ -211,13 +211,19 @@ def run_ib_mode(args):
                         )
                 print()
 
-        # Fetch account NAV
-        print("Fetching account value...")
-        account_nav, account_ccy = fetch_account_value(ib)
-        if account_nav is not None:
-            print(f"  Account NAV: {account_ccy} {account_nav:,.2f}")
+        # Fetch account NAV (or use manual override)
+        if args.nav:
+            account_value_gbp = args.nav
+            print(f"Using manual account NAV: GBP {account_value_gbp:,.0f}")
+            account_ccy = "GBP"
         else:
-            print("  Could not retrieve account NAV — % capital column will be empty")
+            print("Fetching account value from IB...")
+            account_nav, account_ccy = fetch_account_value(ib)
+            if account_nav is not None:
+                print(f"  Account NAV: {account_ccy} {account_nav:,.2f}")
+            else:
+                print("  Could not retrieve account NAV — % capital column will be empty")
+                print("  Tip: Use --nav <amount> to specify NAV manually in GBP")
 
         # Collect all currencies that need FX conversion
         currencies = {p.currency for p in positions if p.currency}
@@ -238,15 +244,16 @@ def run_ib_mode(args):
         else:
             print("  All positions in GBP — no FX conversion needed")
 
-        # Convert account NAV to GBP
-        account_value_gbp = None
-        if account_nav is not None and account_ccy:
-            rate = fx_rates.get(account_ccy)
-            if rate is not None:
-                account_value_gbp = account_nav * rate
-                print(f"  Account NAV in GBP: {account_value_gbp:,.0f}")
-            else:
-                print(f"  Cannot convert account NAV ({account_ccy}) to GBP — no FX rate")
+        # Convert account NAV to GBP (skip if already GBP from --nav)
+        if not args.nav:
+            account_value_gbp = None
+            if account_nav is not None and account_ccy:
+                rate = fx_rates.get(account_ccy)
+                if rate is not None:
+                    account_value_gbp = account_nav * rate
+                    print(f"  Account NAV in GBP: {account_value_gbp:,.0f}")
+                else:
+                    print(f"  Cannot convert account NAV ({account_ccy}) to GBP — no FX rate")
 
         # Build currency lookup from positions
         pos_currencies = {p.symbol: p.currency for p in positions}
@@ -266,22 +273,13 @@ def run_ib_mode(args):
             if account_value_gbp and account_value_gbp > 0:
                 r.pct_of_capital = (r.exposure_gbp / account_value_gbp) * 100
 
-            # Loss to 9 DMA: how much the position would lose if price drops to 9 DMA
-            if r.dma_9 is not None and r.latest_price > r.dma_9:
-                price_drop = r.latest_price - r.dma_9
-                r.loss_to_9dma = price_drop * abs(r.position_size) * rate
-            elif r.dma_9 is not None:
-                # Already below 9 DMA — show the current unrealised loss from 9 DMA
-                price_drop = r.latest_price - r.dma_9
-                r.loss_to_9dma = price_drop * abs(r.position_size) * rate
+            # Loss to 9 DMA: GBP loss if price dropped to the 9 DMA (negative = already below)
+            if r.dma_9 is not None:
+                r.loss_to_9dma = (r.latest_price - r.dma_9) * abs(r.position_size) * rate
 
-            # Loss to 21 DMA: same logic for 21 DMA
-            if r.dma_21 is not None and r.latest_price > r.dma_21:
-                price_drop = r.latest_price - r.dma_21
-                r.loss_to_21dma = price_drop * abs(r.position_size) * rate
-            elif r.dma_21 is not None:
-                price_drop = r.latest_price - r.dma_21
-                r.loss_to_21dma = price_drop * abs(r.position_size) * rate
+            # Loss to 21 DMA: same for 21 DMA
+            if r.dma_21 is not None:
+                r.loss_to_21dma = (r.latest_price - r.dma_21) * abs(r.position_size) * rate
 
         print()
 
@@ -336,6 +334,14 @@ def main():
         type=int,
         default=1,
         help="API client ID (default: 1)",
+    )
+    ib_conn.add_argument(
+        "--nav",
+        type=float,
+        default=None,
+        metavar="GBP",
+        help="Manually specify account NAV in GBP (overrides IB lookup). "
+             "Use this if automatic NAV fetch from IB doesn't work.",
     )
 
     # Output options

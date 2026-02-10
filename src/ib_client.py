@@ -224,44 +224,69 @@ def fetch_all_historical(
 def fetch_account_value(ib: IB) -> tuple[float | None, str]:
     """Fetch total account value (NetLiquidation) from TWS (read-only).
 
-    Uses reqAccountSummary which is a read-only API call that works
-    even with the 'Read-Only API' checkbox enabled in TWS.
+    Tries multiple approaches:
+    1. reqAccountSummary (explicit subscription)
+    2. accountValues() (auto-populated if account updates are active)
 
     Returns (net_liquidation_value, base_currency).
     """
+    # Method 1: reqAccountSummary — explicit read-only subscription
     try:
         summary = ib.reqAccountSummary(
             group="All",
             tags="NetLiquidation",
         )
-        # Wait for data to arrive — subscription fills the list asynchronously
-        for _ in range(10):
+        # Wait longer for data to arrive — subscription fills asynchronously
+        for _ in range(20):
             ib.sleep(0.5)
             if summary:
                 break
 
-        net_liq = None
-        currency = ""
-        for av in summary:
-            if av.tag == "NetLiquidation" and av.currency:
-                try:
-                    val = float(av.value)
-                    if val > 0:
-                        net_liq = val
-                        currency = av.currency
-                        break
-                except (ValueError, TypeError):
-                    continue
+        if summary:
+            print(f"  reqAccountSummary returned {len(summary)} item(s):")
+            for av in summary:
+                print(f"    tag={av.tag}  value={av.value}  currency={av.currency}  account={av.account}")
+
+            for av in summary:
+                if av.tag == "NetLiquidation" and av.currency:
+                    try:
+                        val = float(av.value)
+                        if val > 0:
+                            try:
+                                ib.cancelAccountSummary()
+                            except Exception:
+                                pass
+                            return val, av.currency
+                    except (ValueError, TypeError):
+                        continue
+        else:
+            print("  reqAccountSummary returned no data after 10s")
 
         try:
             ib.cancelAccountSummary()
         except Exception:
             pass
 
-        if net_liq is None:
-            print("  Warning: reqAccountSummary returned no NetLiquidation data")
-        return net_liq, currency
-
     except Exception as e:
-        print(f"  Warning: Could not fetch account value: {e}")
-        return None, ""
+        print(f"  reqAccountSummary failed: {e}")
+
+    # Method 2: Check accountValues() — populated if ib_async auto-subscribed
+    try:
+        acct_vals = ib.accountValues()
+        if acct_vals:
+            print(f"  Trying accountValues() ({len(acct_vals)} item(s))...")
+            for av in acct_vals:
+                if av.tag == "NetLiquidation" and av.currency and av.currency != "BASE":
+                    try:
+                        val = float(av.value)
+                        if val > 0:
+                            print(f"    Found NetLiquidation: {av.currency} {val}")
+                            return val, av.currency
+                    except (ValueError, TypeError):
+                        continue
+    except Exception as e:
+        print(f"  accountValues() failed: {e}")
+
+    print("  Warning: Could not retrieve account NAV from IB")
+    print("  Tip: Use --nav <amount> to specify account NAV manually (in GBP)")
+    return None, ""
