@@ -230,21 +230,36 @@ def fetch_account_value(ib: IB) -> tuple[float | None, str]:
     Returns (net_liquidation_value, base_currency).
     """
     try:
-        summary = ib.reqAccountSummary()
-        ib.sleep(2)  # Wait for data to arrive
+        summary = ib.reqAccountSummary(
+            group="All",
+            tags="NetLiquidation",
+        )
+        # Wait for data to arrive — subscription fills the list asynchronously
+        for _ in range(10):
+            ib.sleep(0.5)
+            if summary:
+                break
 
         net_liq = None
         currency = ""
         for av in summary:
             if av.tag == "NetLiquidation" and av.currency:
                 try:
-                    net_liq = float(av.value)
-                    currency = av.currency
+                    val = float(av.value)
+                    if val > 0:
+                        net_liq = val
+                        currency = av.currency
+                        break
                 except (ValueError, TypeError):
                     continue
-                break
 
-        ib.cancelAccountSummary()
+        try:
+            ib.cancelAccountSummary()
+        except Exception:
+            pass
+
+        if net_liq is None:
+            print("  Warning: reqAccountSummary returned no NetLiquidation data")
         return net_liq, currency
 
     except Exception as e:

@@ -214,20 +214,30 @@ def run_ib_mode(args):
         # Fetch account NAV and compute GBP exposure for each position
         print("Fetching account value...")
         account_nav, account_ccy = fetch_account_value(ib)
+        if account_nav is not None:
+            print(f"  Account NAV: {account_ccy} {account_nav:,.2f}")
+        else:
+            print("  Could not retrieve account NAV — % capital column will be empty")
 
         # Collect all currencies that need FX conversion (positions + account)
         currencies = {p.currency for p in positions if p.currency}
         if account_ccy:
             currencies.add(account_ccy)
+        print(f"  Position currencies: {', '.join(sorted(currencies)) or 'none detected'}")
 
-        if currencies - {"GBP"}:
-            print(f"Fetching FX rates for: {', '.join(sorted(currencies - {'GBP'}))}...")
+        # Fetch FX rates for any non-GBP currencies
+        fx_rates = {"GBP": 1.0}
+        non_gbp = currencies - {"GBP"}
+        if non_gbp:
+            print(f"Fetching FX rates for: {', '.join(sorted(non_gbp))}...")
             fx_rates = fetch_fx_rates(currencies, target="GBP")
-            missing_fx = (currencies - {"GBP"}) - set(fx_rates.keys())
-            if missing_fx:
-                print(f"  Warning: Could not get FX rates for: {', '.join(sorted(missing_fx))}")
+            for ccy in sorted(non_gbp):
+                if ccy in fx_rates:
+                    print(f"  {ccy}/GBP = {fx_rates[ccy]:.6f}")
+                else:
+                    print(f"  {ccy}/GBP = FAILED")
         else:
-            fx_rates = {"GBP": 1.0}
+            print("All positions in GBP — no FX conversion needed")
 
         # Convert account NAV to GBP
         account_value_gbp = None
@@ -235,26 +245,33 @@ def run_ib_mode(args):
             rate = fx_rates.get(account_ccy)
             if rate is not None:
                 account_value_gbp = account_nav * rate
-                print(f"Account NAV: {account_ccy} {account_nav:,.0f}"
-                      f" (GBP {account_value_gbp:,.0f})")
+                print(f"Account NAV in GBP: {account_value_gbp:,.0f}")
             else:
-                print(f"Account NAV: {account_ccy} {account_nav:,.0f}"
-                      f" (no FX rate to GBP)")
+                print(f"Cannot convert account NAV ({account_ccy}) to GBP — no FX rate")
 
         # Build currency lookup from positions
         pos_currencies = {p.symbol: p.currency for p in positions}
 
         # Set exposure and % capital on each result
+        exposure_count = 0
         for r in results:
             if r.error or r.latest_price is None or r.position_size is None:
                 continue
             ccy = pos_currencies.get(r.symbol, "")
             r.currency = ccy
+            if not ccy:
+                continue
             rate = fx_rates.get(ccy)
             if rate is not None:
                 r.exposure_gbp = r.position_size * r.latest_price * rate
+                exposure_count += 1
                 if account_value_gbp and account_value_gbp > 0:
                     r.pct_of_capital = (r.exposure_gbp / account_value_gbp) * 100
+
+        if exposure_count == 0:
+            print("Warning: Could not compute exposure for any positions")
+        else:
+            print(f"Computed GBP exposure for {exposure_count} position(s)")
         print()
 
     finally:

@@ -257,20 +257,66 @@ def fetch_fx_rates(currencies: set[str], target: str = "GBP") -> dict[str, float
     rates = {target: 1.0}
     to_fetch = currencies - {target}
 
-    for ccy in to_fetch:
+    if not to_fetch:
+        return rates
+
+    # Try batch download first — more reliable than individual Ticker lookups.
+    # Yahoo Finance uses standard pair conventions (e.g. GBPUSD=X not USDGBP=X),
+    # so we try the inverse pair (target+ccy) and invert the rate.
+    tickers_inv = {ccy: f"{target}{ccy}=X" for ccy in to_fetch}
+    ticker_str = " ".join(tickers_inv.values())
+
+    try:
+        data = yf.download(ticker_str, period="5d", progress=False, threads=True)
+        for ccy, pair in tickers_inv.items():
+            try:
+                if len(tickers_inv) == 1:
+                    close = data["Close"].dropna()
+                else:
+                    close = data["Close"][pair].dropna() if pair in data["Close"].columns else pd.Series()
+                if not close.empty:
+                    inv_rate = float(close.iloc[-1])
+                    if inv_rate > 0:
+                        rates[ccy] = 1.0 / inv_rate
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # For any currencies still missing, try direct pair (ccy+target)
+    still_missing = to_fetch - set(rates.keys())
+    if still_missing:
+        tickers_direct = {ccy: f"{ccy}{target}=X" for ccy in still_missing}
+        ticker_str = " ".join(tickers_direct.values())
         try:
-            # Try direct pair: e.g. USDGBP=X gives GBP per 1 USD
-            pair = f"{ccy}{target}=X"
-            hist = yf.Ticker(pair).history(period="2d")
-            if not hist.empty:
-                rates[ccy] = float(hist["Close"].iloc[-1])
-                continue
-            # Try inverse pair: e.g. GBPUSD=X gives USD per 1 GBP → invert
-            inv_pair = f"{target}{ccy}=X"
-            hist = yf.Ticker(inv_pair).history(period="2d")
-            if not hist.empty:
-                rates[ccy] = 1.0 / float(hist["Close"].iloc[-1])
+            data = yf.download(ticker_str, period="5d", progress=False, threads=True)
+            for ccy, pair in tickers_direct.items():
+                try:
+                    if len(tickers_direct) == 1:
+                        close = data["Close"].dropna()
+                    else:
+                        close = data["Close"][pair].dropna() if pair in data["Close"].columns else pd.Series()
+                    if not close.empty:
+                        rate = float(close.iloc[-1])
+                        if rate > 0:
+                            rates[ccy] = rate
+                except Exception:
+                    pass
         except Exception:
-            pass  # Missing rate will be handled by caller
+            pass
+
+    # Last resort — individual ticker lookups for anything still missing
+    still_missing = to_fetch - set(rates.keys())
+    for ccy in still_missing:
+        for pair, invert in [(f"{target}{ccy}=X", True), (f"{ccy}{target}=X", False)]:
+            try:
+                hist = yf.Ticker(pair).history(period="5d")
+                if not hist.empty:
+                    val = float(hist["Close"].dropna().iloc[-1])
+                    if val > 0:
+                        rates[ccy] = (1.0 / val) if invert else val
+                        break
+            except Exception:
+                continue
 
     return rates
