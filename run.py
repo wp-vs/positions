@@ -86,6 +86,7 @@ def run_ib_mode(args):
             "  TWS: Edit > Global Configuration > API > Settings\n"
             "       - Enable ActiveX and Socket Clients\n"
             "       - Socket port: 7497 (paper) or 7496 (live)\n"
+            "       - 'Read-Only API' can remain checked (only read access is needed)\n"
             "  Gateway: port 4002 (paper) or 4001 (live)",
             file=sys.stderr,
         )
