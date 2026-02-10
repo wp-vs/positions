@@ -29,6 +29,11 @@ class IBPosition:
     contract: Contract
 
 
+def _silent_error_handler(reqId, errorCode, errorString, contract):
+    """Swallow expected IB errors (e.g. 'No security definition found')."""
+    pass
+
+
 def connect(host: str = "127.0.0.1", port: int = 7497, client_id: int = 1) -> IB:
     """Connect to TWS/IB Gateway in read-only mode.
 
@@ -81,14 +86,28 @@ def fetch_positions(ib: IB, equity_only: bool = True) -> list[IBPosition]:
         return positions
 
     # Resolve full security names via reqContractDetails (read-only)
-    # longName lives on ContractDetails, not on Contract itself
-    for p in positions:
-        try:
-            details_list = ib.reqContractDetails(p.contract)
-            if details_list:
-                p.description = details_list[0].longName or p.description
-        except Exception:
-            pass  # keep the localSymbol/symbol fallback
+    # longName lives on ContractDetails, not on Contract itself.
+    # Temporarily mute IB error events — some contracts (e.g. PINK sheet
+    # preferreds) trigger "No security definition" errors that are expected.
+    ib.errorEvent -= ib._onError
+    ib.errorEvent += _silent_error_handler
+    unresolved = []
+    try:
+        for p in positions:
+            try:
+                details_list = ib.reqContractDetails(p.contract)
+                if details_list:
+                    p.description = details_list[0].longName or p.description
+                else:
+                    unresolved.append(p.symbol)
+            except Exception:
+                unresolved.append(p.symbol)
+    finally:
+        ib.errorEvent -= _silent_error_handler
+        ib.errorEvent += ib._onError
+
+    if unresolved:
+        print(f"  Note: Could not resolve details for: {', '.join(unresolved)}")
 
     # Fetch live price snapshots (read-only market data request)
     _fetch_market_snapshots(ib, positions)
@@ -105,14 +124,23 @@ def _fetch_market_snapshots(ib: IB, positions: list[IBPosition]) -> None:
     # Request delayed frozen data — works without paid market data subscriptions
     ib.reqMarketDataType(4)
 
+    # Mute errors for contracts that may not support market data (e.g. PINK sheet)
+    ib.errorEvent -= ib._onError
+    ib.errorEvent += _silent_error_handler
+
     tickers = []
     for pos in positions:
-        ticker = ib.reqMktData(pos.contract, snapshot=True)
-        tickers.append((pos, ticker))
+        try:
+            ticker = ib.reqMktData(pos.contract, snapshot=True)
+            tickers.append((pos, ticker))
+        except Exception:
+            pass
 
     # Wait for snapshots to fill in (up to 5 seconds)
-    timeout = 5.0
-    ib.sleep(timeout)
+    ib.sleep(5.0)
+
+    ib.errorEvent -= _silent_error_handler
+    ib.errorEvent += ib._onError
 
     for pos, ticker in tickers:
         # Use last price, or close, or previous close — whichever is available
