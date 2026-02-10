@@ -43,7 +43,7 @@ def run_csv_mode(args):
 
     print(f"Reading positions from: {file_path}")
     try:
-        positions = parse_positions_file(file_path)
+        positions, excluded = parse_positions_file(file_path)
     except (FileNotFoundError, ValueError) as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
@@ -58,10 +58,13 @@ def run_csv_mode(args):
         p["symbol"]: p["position"] for p in positions if "position" in p
     }
 
-    print(f"Found {len(symbols)} position(s): {', '.join(symbols)}")
+    if excluded:
+        print(f"Skipped {len(excluded)} non-equity position(s)")
+    print(f"Found {len(symbols)} equity position(s): {', '.join(symbols)}")
     print("Fetching price data via Yahoo Finance...\n")
 
-    return fetch_price_data(symbols, descriptions, position_sizes)
+    results = fetch_price_data(symbols, descriptions, position_sizes)
+    return results, excluded
 
 
 def run_ib_mode(args):
@@ -96,16 +99,25 @@ def run_ib_mode(args):
         )
         sys.exit(1)
 
+    excluded = []
     try:
         print("Fetching portfolio positions...")
-        positions = fetch_positions(ib)
+        positions, ib_excluded = fetch_positions(ib)
+
+        if ib_excluded:
+            print(f"Skipped {len(ib_excluded)} non-equity position(s)")
+            excluded = [
+                {"symbol": p.symbol, "description": p.description,
+                 "asset_class": p.sec_type, "position": p.position}
+                for p in ib_excluded
+            ]
 
         if not positions:
             print("No equity/ETF/CFD positions found in your IB account.")
             ib.disconnect()
             sys.exit(0)
 
-        print(f"Found {len(positions)} position(s):")
+        print(f"Found {len(positions)} equity position(s):")
         for p in positions:
             price_str = f" @ {p.market_price:.2f}" if p.market_price else ""
             print(f"  {p.symbol:<8} {p.description:<30} {p.position:>8.0f}{price_str}")
@@ -202,7 +214,7 @@ def run_ib_mode(args):
         ib.disconnect()
         print("Disconnected from IB.\n")
 
-    return results
+    return results, excluded
 
 
 def main():
@@ -288,9 +300,9 @@ def main():
 
     # Run in appropriate mode
     if args.ib:
-        results = run_ib_mode(args)
+        results, excluded = run_ib_mode(args)
     else:
-        results = run_csv_mode(args)
+        results, excluded = run_csv_mode(args)
 
     # Output — multiple flags can be combined
     if args.html:
@@ -303,13 +315,13 @@ def main():
         else:
             html_path = reports_dir / Path(args.html).name
 
-        html = format_html(results)
+        html = format_html(results, excluded=excluded)
         html_path.write_text(html)
         print(f"HTML report saved to: {html_path}")
 
     if args.email:
         from src.emailer import send_report
-        html = format_html(results)
+        html = format_html(results, excluded=excluded)
         try:
             send_report(html, recipient=args.email_to)
             target = args.email_to or "(from EMAIL_TO env var)"
@@ -326,7 +338,7 @@ def main():
     else:
         # Always show the table to terminal (even alongside --html/--email)
         use_color = not args.no_color and sys.stdout.isatty()
-        print(format_results(results, use_color=use_color))
+        print(format_results(results, use_color=use_color, excluded=excluded))
 
 
 if __name__ == "__main__":

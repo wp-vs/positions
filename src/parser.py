@@ -59,7 +59,7 @@ def _clean_symbol(raw: str) -> str:
     return symbol
 
 
-def parse_positions_file(file_path: str | Path) -> list[dict]:
+def parse_positions_file(file_path: str | Path) -> tuple[list[dict], list[dict]]:
     """Parse a positions file and return equity/ETF/CFD symbols.
 
     Supports:
@@ -68,8 +68,10 @@ def parse_positions_file(file_path: str | Path) -> list[dict]:
     - IB Activity Statement CSV (filters to Open Positions section)
     - Plain text list of symbols (one per line)
 
-    Returns a list of dicts with at minimum {"symbol": "AAPL"}.
-    Additional fields (position, avg_cost, description) included when available.
+    Returns:
+        (positions, excluded) — positions is a list of dicts with at minimum
+        {"symbol": "AAPL"}. excluded contains non-equity rows that were
+        filtered out, each with {"symbol", "asset_class", ...}.
     """
     file_path = Path(file_path)
     if not file_path.exists():
@@ -82,7 +84,7 @@ def parse_positions_file(file_path: str | Path) -> list[dict]:
     # Try plain text list first (one symbol per line, no commas/tabs)
     lines = content.splitlines()
     if all(re.match(r"^[A-Za-z0-9.\-/]+$", line.strip()) for line in lines if line.strip()):
-        return [{"symbol": _clean_symbol(line)} for line in lines if line.strip()]
+        return [{"symbol": _clean_symbol(line)} for line in lines if line.strip()], []
 
     # CSV parsing
     delimiter = _detect_delimiter(file_path)
@@ -99,9 +101,10 @@ def _is_activity_statement(content: str) -> bool:
     return "Open Positions" in content and "Header" in content
 
 
-def _parse_activity_statement(file_path: Path, delimiter: str) -> list[dict]:
+def _parse_activity_statement(file_path: Path, delimiter: str) -> tuple[list[dict], list[dict]]:
     """Parse IB Activity Statement CSV, extracting Open Positions section."""
     positions = []
+    excluded = []
     in_positions_section = False
     headers = []
 
@@ -120,24 +123,28 @@ def _parse_activity_statement(file_path: Path, delimiter: str) -> list[dict]:
                     in_positions_section = True
                     continue
                 elif row_type == "Data" and in_positions_section:
-                    pos = _extract_position_from_row(row, headers)
+                    pos, is_excluded = _extract_position_from_row(row, headers, return_excluded=True)
                     if pos:
-                        positions.append(pos)
+                        if is_excluded:
+                            excluded.append(pos)
+                        else:
+                            positions.append(pos)
             elif in_positions_section and section != "Open Positions":
                 in_positions_section = False
 
-    return positions
+    return positions, excluded
 
 
-def _parse_standard_csv(file_path: Path, delimiter: str) -> list[dict]:
+def _parse_standard_csv(file_path: Path, delimiter: str) -> tuple[list[dict], list[dict]]:
     """Parse a standard CSV with headers."""
     positions = []
+    excluded = []
 
     with open(file_path, "r", newline="") as f:
         reader = csv.reader(f, delimiter=delimiter)
         raw_headers = next(reader, None)
         if not raw_headers:
-            return []
+            return [], []
 
         headers = [_normalize_header(h) for h in raw_headers]
 
@@ -158,11 +165,16 @@ def _parse_standard_csv(file_path: Path, delimiter: str) -> list[dict]:
                 continue
 
             # Filter by asset class if column exists
+            is_excluded = False
+            asset_class = ""
             if asset_idx is not None and len(row) > asset_idx:
-                if not _is_equity_type(row[asset_idx]):
-                    continue
+                asset_class = row[asset_idx].strip()
+                if not _is_equity_type(asset_class):
+                    is_excluded = True
 
             pos = {"symbol": symbol}
+            if asset_class:
+                pos["asset_class"] = asset_class
 
             # Extract optional fields
             if pos_idx is not None and len(row) > pos_idx:
@@ -189,32 +201,47 @@ def _parse_standard_csv(file_path: Path, delimiter: str) -> list[dict]:
                         pass
                     break
 
-            positions.append(pos)
+            if is_excluded:
+                excluded.append(pos)
+            else:
+                positions.append(pos)
 
-    return positions
+    return positions, excluded
 
 
-def _extract_position_from_row(row: list[str], headers: list[str]) -> dict | None:
-    """Extract a position dict from an activity statement row."""
+def _extract_position_from_row(
+    row: list[str], headers: list[str], return_excluded: bool = False,
+) -> tuple[dict | None, bool]:
+    """Extract a position dict from an activity statement row.
+
+    Returns:
+        (position_dict, is_excluded) — is_excluded is True if the row was
+        filtered out due to asset class.
+    """
     sym_idx = _find_column(headers, SYMBOL_COLUMNS)
     asset_idx = _find_column(headers, ASSET_CLASS_COLUMNS)
 
     if sym_idx is None:
-        return None
+        return None, False
 
     if len(row) <= sym_idx:
-        return None
-
-    # Filter to equities only
-    if asset_idx is not None and len(row) > asset_idx:
-        if not _is_equity_type(row[asset_idx]):
-            return None
+        return None, False
 
     symbol = _clean_symbol(row[sym_idx])
     if not symbol:
-        return None
+        return None, False
+
+    # Check asset class
+    is_excluded = False
+    asset_class = ""
+    if asset_idx is not None and len(row) > asset_idx:
+        asset_class = row[asset_idx].strip()
+        if not _is_equity_type(asset_class):
+            is_excluded = True
 
     pos = {"symbol": symbol}
+    if asset_class:
+        pos["asset_class"] = asset_class
 
     pos_idx = _find_column(headers, POSITION_COLUMNS)
     if pos_idx is not None and len(row) > pos_idx:
@@ -223,4 +250,4 @@ def _extract_position_from_row(row: list[str], headers: list[str]) -> dict | Non
         except ValueError:
             pass
 
-    return pos
+    return pos, is_excluded

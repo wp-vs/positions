@@ -35,7 +35,11 @@ def _pct_from_dma(price: float | None, dma: float | None) -> str:
     return f" ({sign}{pct:.1f}%)"
 
 
-def format_results(results: list[PriceData], use_color: bool = True) -> str:
+def format_results(
+    results: list[PriceData],
+    use_color: bool = True,
+    excluded: list[dict] | None = None,
+) -> str:
     """Format price data as a table with DMA highlighting.
 
     Positions trading below 9 DMA are highlighted in red.
@@ -146,6 +150,31 @@ def format_results(results: list[PriceData], use_color: bool = True) -> str:
             else:
                 lines.append(msg)
 
+    if excluded:
+        lines.append("")
+        exc_header = f"Other positions not included in scan ({len(excluded)}):"
+        if use_color:
+            lines.append(f"{DIM}{exc_header}{RESET}")
+        else:
+            lines.append(exc_header)
+        for p in excluded:
+            sym = p.get("symbol", "?")
+            desc = p.get("description", "")
+            asset = p.get("asset_class", "")
+            pos = p.get("position")
+            parts = [f"  {sym:<8}"]
+            if desc:
+                parts.append(f"{desc[:30]:<30}")
+            if asset:
+                parts.append(f"[{asset}]")
+            if pos is not None:
+                parts.append(f"qty: {pos:g}")
+            msg = "  ".join(parts)
+            if use_color:
+                lines.append(f"{DIM}{msg}{RESET}")
+            else:
+                lines.append(msg)
+
     return "\n".join(lines)
 
 
@@ -177,7 +206,7 @@ def _html_price(val: float | None) -> str:
     return f"{val:.2f}"
 
 
-def format_html(results: list[PriceData]) -> str:
+def format_html(results: list[PriceData], excluded: list[dict] | None = None) -> str:
     """Format results as a self-contained HTML page with styled table."""
     if not results:
         return "<html><body><p>No positions to display.</p></body></html>"
@@ -253,6 +282,31 @@ def format_html(results: list[PriceData]) -> str:
         <div class="errors">
             <p>Could not fetch data:</p>
             <ul>{err_items}</ul>
+        </div>"""
+
+    # Excluded (non-equity) positions section
+    excluded_html = ""
+    if excluded:
+        exc_rows = []
+        for p in excluded:
+            sym = p.get("symbol", "?")
+            desc = p.get("description", "")
+            asset = p.get("asset_class", "")
+            pos = p.get("position")
+            pos_str = f"{pos:g}" if pos is not None else ""
+            exc_rows.append(
+                f"<tr><td class='symbol'>{sym}</td>"
+                f"<td>{desc}</td>"
+                f"<td>{asset}</td>"
+                f"<td class='num'>{pos_str}</td></tr>"
+            )
+        excluded_html = f"""
+        <div class="excluded">
+            <p>Other positions not included in scan ({len(excluded)}):</p>
+            <table class="excluded-table">
+                <thead><tr><th>Symbol</th><th>Description</th><th>Type</th><th>Qty</th></tr></thead>
+                <tbody>{''.join(exc_rows)}</tbody>
+            </table>
         </div>"""
 
     return f"""<!DOCTYPE html>
@@ -349,6 +403,33 @@ def format_html(results: list[PriceData]) -> str:
         margin: 4px 0 0 0;
         padding-left: 20px;
     }}
+    .excluded {{
+        margin-top: 20px;
+        padding: 10px 14px;
+        background: #f8f9fa;
+        border-left: 4px solid #dee2e6;
+        color: #6c757d;
+        font-size: 0.85em;
+    }}
+    .excluded p {{
+        margin: 0 0 8px 0;
+        font-weight: 600;
+        color: #495057;
+    }}
+    .excluded-table {{
+        width: auto;
+        font-size: 0.95em;
+        box-shadow: none;
+        background: transparent;
+    }}
+    .excluded-table th {{
+        background: #6c757d;
+        padding: 6px 10px;
+    }}
+    .excluded-table td {{
+        padding: 4px 10px;
+        border-bottom: 1px solid #dee2e6;
+    }}
 </style>
 </head>
 <body>
@@ -363,5 +444,6 @@ def format_html(results: list[PriceData]) -> str:
     </table>
     <div class="summary">Total positions: {len(valid)}</div>
     {errors_html}
+    {excluded_html}
 </body>
 </html>"""

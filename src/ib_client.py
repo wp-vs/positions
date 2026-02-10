@@ -51,23 +51,39 @@ def connect(host: str = "127.0.0.1", port: int = 7497, client_id: int = 1) -> IB
     return ib
 
 
-def fetch_positions(ib: IB, equity_only: bool = True) -> list[IBPosition]:
+def fetch_positions(ib: IB, equity_only: bool = True) -> tuple[list[IBPosition], list[IBPosition]]:
     """Fetch current positions from TWS using read-only API calls.
 
     Uses reqPositions() which is a one-shot read-only request.
     Then resolves contract details via reqContractDetails() (also read-only)
     to get long security names. Finally fetches market data snapshots for
     live prices.
+
+    Returns:
+        (equity_positions, excluded_positions) — excluded are non-equity
+        positions (forex, options, futures, etc.) when equity_only=True.
     """
     # reqPositions() is a read-only request that returns all positions
     ib_positions = ib.reqPositions()
 
     positions = []
+    excluded = []
     for pos in ib_positions:
         contract = pos.contract
         sec_type = contract.secType
 
         if equity_only and sec_type not in EQUITY_SEC_TYPES:
+            excluded.append(IBPosition(
+                symbol=contract.symbol,
+                description=contract.localSymbol or contract.symbol,
+                sec_type=sec_type,
+                position=pos.position,
+                avg_cost=pos.avgCost,
+                market_price=None,
+                market_value=None,
+                unrealized_pnl=None,
+                contract=contract,
+            ))
             continue
 
         positions.append(IBPosition(
@@ -83,7 +99,7 @@ def fetch_positions(ib: IB, equity_only: bool = True) -> list[IBPosition]:
         ))
 
     if not positions:
-        return positions
+        return positions, excluded
 
     # Resolve full security names via reqContractDetails (read-only)
     # longName lives on ContractDetails, not on Contract itself.
@@ -112,7 +128,7 @@ def fetch_positions(ib: IB, equity_only: bool = True) -> list[IBPosition]:
     # Fetch live price snapshots (read-only market data request)
     _fetch_market_snapshots(ib, positions)
 
-    return positions
+    return positions, excluded
 
 
 def _fetch_market_snapshots(ib: IB, positions: list[IBPosition]) -> None:
