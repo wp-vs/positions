@@ -141,6 +141,8 @@ def run_ib_mode(args):
             print()
         else:
             # Use yfinance for DMAs, IB for positions + live prices
+            from src.exchanges import ib_to_yahoo_symbol
+
             symbols = [p.symbol for p in positions]
             descriptions = {p.symbol: p.description for p in positions}
             position_sizes = {p.symbol: p.position for p in positions}
@@ -148,8 +150,24 @@ def run_ib_mode(args):
                 p.symbol: p.market_price for p in positions if p.market_price
             }
 
+            # Map IB symbols to Yahoo Finance tickers using exchange info
+            yahoo_symbols = {}
+            for p in positions:
+                yf_sym = ib_to_yahoo_symbol(
+                    p.symbol,
+                    exchange=p.contract.exchange or "",
+                    currency=p.contract.currency or "",
+                    primary_exchange=getattr(p.contract, "primaryExchange", "") or "",
+                )
+                if yf_sym != p.symbol:
+                    yahoo_symbols[p.symbol] = yf_sym
+
+            if yahoo_symbols:
+                mapped = [f"{s} -> {y}" for s, y in yahoo_symbols.items()]
+                print(f"Mapped non-US symbols for Yahoo Finance: {', '.join(mapped)}")
+
             print("Fetching historical data from Yahoo Finance for DMAs...\n")
-            results = fetch_price_data(symbols, descriptions, position_sizes)
+            results = fetch_price_data(symbols, descriptions, position_sizes, yahoo_symbols)
 
             # Override latest price with IB live price where available
             for r in results:
@@ -157,6 +175,27 @@ def run_ib_mode(args):
                     r.latest_price = live_prices[r.symbol]
                     if r.dma_9 is not None:
                         r.below_9dma = r.latest_price < r.dma_9
+
+            # Fall back to IB historical data for symbols yfinance couldn't find
+            failed = [r for r in results if r.error]
+            if failed:
+                failed_symbols = {r.symbol for r in failed}
+                failed_positions = [p for p in positions if p.symbol in failed_symbols]
+                print(f"Falling back to IB historical data for {len(failed)} symbol(s) "
+                      f"yfinance couldn't resolve: {', '.join(sorted(failed_symbols))}")
+                ib_history = fetch_all_historical(ib, failed_positions)
+
+                for i, r in enumerate(results):
+                    if r.error and r.symbol in ib_history:
+                        results[i] = compute_dmas_from_history(
+                            symbol=r.symbol,
+                            hist=ib_history[r.symbol],
+                            close_col="close",
+                            latest_price=live_prices.get(r.symbol),
+                            description=descriptions.get(r.symbol, ""),
+                            position_size=position_sizes.get(r.symbol),
+                        )
+                print()
 
     finally:
         ib.disconnect()

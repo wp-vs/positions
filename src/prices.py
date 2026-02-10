@@ -97,20 +97,34 @@ def fetch_price_data(
     symbols: list[str],
     descriptions: dict[str, str] | None = None,
     position_sizes: dict[str, float] | None = None,
+    yahoo_symbols: dict[str, str] | None = None,
 ) -> list[PriceData]:
     """Fetch price data and DMAs for a list of symbols via yfinance.
 
     Uses yfinance to pull ~80 trading days of daily history (enough for 50 DMA)
     and computes 9, 21, and 50 day simple moving averages.
+
+    Args:
+        symbols: List of position symbols (as displayed, e.g. "RWE")
+        descriptions: {symbol: description} mapping
+        position_sizes: {symbol: quantity} mapping
+        yahoo_symbols: {symbol: yahoo_ticker} mapping for non-US stocks
+                       (e.g. {"RWE": "RWE.DE", "PRY": "PRY.MI"})
     """
     descriptions = descriptions or {}
     position_sizes = position_sizes or {}
+    yahoo_symbols = yahoo_symbols or {}
     results = []
 
     if not symbols:
         return results
 
-    ticker_str = " ".join(symbols)
+    # Build the list of Yahoo tickers to download
+    yf_tickers = [yahoo_symbols.get(s, s) for s in symbols]
+    # Map Yahoo ticker back to display symbol
+    yf_to_display = {yahoo_symbols.get(s, s): s for s in symbols}
+
+    ticker_str = " ".join(yf_tickers)
 
     try:
         data = yf.download(
@@ -122,15 +136,19 @@ def fetch_price_data(
         )
     except Exception:
         for symbol in symbols:
+            yf_sym = yahoo_symbols.get(symbol, symbol)
             results.append(_fetch_single(
                 symbol, descriptions.get(symbol, ""), position_sizes.get(symbol),
+                yf_ticker=yf_sym,
             ))
         return results
 
     for symbol in symbols:
+        yf_sym = yahoo_symbols.get(symbol, symbol)
         results.append(_extract_price_data(
             symbol, data, len(symbols) == 1,
             descriptions.get(symbol, ""), position_sizes.get(symbol),
+            yf_ticker=yf_sym,
         ))
 
     return results
@@ -138,17 +156,19 @@ def fetch_price_data(
 
 def _fetch_single(
     symbol: str, description: str = "", position_size: float | None = None,
+    yf_ticker: str | None = None,
 ) -> PriceData:
     """Fetch data for a single symbol (fallback)."""
+    lookup = yf_ticker or symbol
     try:
-        ticker = yf.Ticker(symbol)
+        ticker = yf.Ticker(lookup)
         hist = ticker.history(period="4mo")
         if hist.empty:
             return PriceData(
                 symbol=symbol, latest_price=None, close_price=None,
                 dma_9=None, dma_21=None, dma_50=None, below_9dma=False,
                 description=description, position_size=position_size,
-                error=f"No data found for {symbol}",
+                error=f"No data found for {symbol} (tried {lookup})",
             )
         return compute_dmas_from_history(
             symbol, hist, description=description, position_size=position_size,
@@ -168,20 +188,27 @@ def _extract_price_data(
     single: bool,
     description: str = "",
     position_size: float | None = None,
+    yf_ticker: str | None = None,
 ) -> PriceData:
     """Extract price data for a symbol from batch download results."""
+    # Use Yahoo ticker for looking up in batch data, display symbol for output
+    lookup = yf_ticker or symbol
     try:
         if single:
             hist = data
         else:
-            if symbol not in data.columns.get_level_values(0):
+            # Try Yahoo ticker first, then display symbol
+            if lookup in data.columns.get_level_values(0):
+                hist = data[lookup]
+            elif symbol in data.columns.get_level_values(0):
+                hist = data[symbol]
+            else:
                 return PriceData(
                     symbol=symbol, latest_price=None, close_price=None,
                     dma_9=None, dma_21=None, dma_50=None, below_9dma=False,
                     description=description, position_size=position_size,
-                    error=f"No data found for {symbol}",
+                    error=f"No data found for {symbol} (tried {lookup})",
                 )
-            hist = data[symbol]
 
         hist = hist.dropna(how="all")
         if hist.empty:
