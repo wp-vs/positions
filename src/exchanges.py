@@ -11,7 +11,7 @@ IB_TO_YAHOO_SUFFIX: dict[str, str] = {
     "AMEX": "",
     "BATS": "",
     "IEX": "",
-    "TSE": ".TO",          # Toronto Stock Exchange
+    "TSE": ".TO",          # Toronto Stock Exchange (also Tokyo — disambiguated by currency below)
     "VENTURE": ".V",       # TSX Venture
     "MEXI": ".MX",         # Mexican Stock Exchange
 
@@ -60,7 +60,8 @@ IB_TO_YAHOO_SUFFIX: dict[str, str] = {
     "SEHK": ".HK",           # Hong Kong
     "SEHKNTL": ".HK",
     "SEHKSZSE": ".SZ",       # Shenzhen via SEHK
-    "TSE": ".T",              # Tokyo (note: conflicts with Toronto - handled below)
+    # Note: "TSE" for Tokyo is handled via currency fallback (JPY -> .T)
+    # since IB uses "TSE" for both Toronto and Tokyo.
     "TSEJ": ".T",             # Tokyo
     "ASX": ".AX",             # Australian Securities Exchange
     "SGX": ".SI",             # Singapore
@@ -103,6 +104,13 @@ def ib_to_yahoo_symbol(
     # Try primary exchange first (more specific), then exchange
     for exch in [primary_exchange, exchange]:
         exch = exch.upper().strip()
+        # TSE is ambiguous: Toronto (CAD) vs Tokyo (JPY)
+        if exch == "TSE":
+            cur = currency.upper().strip()
+            if cur == "JPY":
+                return f"{symbol}.T"
+            else:
+                return f"{symbol}.TO"
         if exch in IB_TO_YAHOO_SUFFIX:
             suffix = IB_TO_YAHOO_SUFFIX[exch]
             if suffix:
