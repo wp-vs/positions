@@ -20,6 +20,8 @@ class PriceData:
     exposure_gbp: float | None = None
     pct_of_capital: float | None = None
     currency: str = ""
+    loss_to_9dma: float | None = None
+    loss_to_21dma: float | None = None
     error: str | None = None
 
     @property

@@ -211,7 +211,7 @@ def run_ib_mode(args):
                         )
                 print()
 
-        # Fetch account NAV and compute GBP exposure for each position
+        # Fetch account NAV
         print("Fetching account value...")
         account_nav, account_ccy = fetch_account_value(ib)
         if account_nav is not None:
@@ -219,11 +219,10 @@ def run_ib_mode(args):
         else:
             print("  Could not retrieve account NAV — % capital column will be empty")
 
-        # Collect all currencies that need FX conversion (positions + account)
+        # Collect all currencies that need FX conversion
         currencies = {p.currency for p in positions if p.currency}
         if account_ccy:
             currencies.add(account_ccy)
-        print(f"  Position currencies: {', '.join(sorted(currencies)) or 'none detected'}")
 
         # Fetch FX rates for any non-GBP currencies
         fx_rates = {"GBP": 1.0}
@@ -237,7 +236,7 @@ def run_ib_mode(args):
                 else:
                     print(f"  {ccy}/GBP = FAILED")
         else:
-            print("All positions in GBP — no FX conversion needed")
+            print("  All positions in GBP — no FX conversion needed")
 
         # Convert account NAV to GBP
         account_value_gbp = None
@@ -245,33 +244,45 @@ def run_ib_mode(args):
             rate = fx_rates.get(account_ccy)
             if rate is not None:
                 account_value_gbp = account_nav * rate
-                print(f"Account NAV in GBP: {account_value_gbp:,.0f}")
+                print(f"  Account NAV in GBP: {account_value_gbp:,.0f}")
             else:
-                print(f"Cannot convert account NAV ({account_ccy}) to GBP — no FX rate")
+                print(f"  Cannot convert account NAV ({account_ccy}) to GBP — no FX rate")
 
         # Build currency lookup from positions
         pos_currencies = {p.symbol: p.currency for p in positions}
 
-        # Set exposure and % capital on each result
-        exposure_count = 0
+        # Set exposure, % capital, and loss-to-DMA on each result
         for r in results:
             if r.error or r.latest_price is None or r.position_size is None:
                 continue
             ccy = pos_currencies.get(r.symbol, "")
             r.currency = ccy
-            if not ccy:
-                continue
-            rate = fx_rates.get(ccy)
-            if rate is not None:
-                r.exposure_gbp = r.position_size * r.latest_price * rate
-                exposure_count += 1
-                if account_value_gbp and account_value_gbp > 0:
-                    r.pct_of_capital = (r.exposure_gbp / account_value_gbp) * 100
+            rate = fx_rates.get(ccy, 1.0)  # default to 1.0 if currency unknown
 
-        if exposure_count == 0:
-            print("Warning: Could not compute exposure for any positions")
-        else:
-            print(f"Computed GBP exposure for {exposure_count} position(s)")
+            # GBP exposure = position_size * price * FX rate
+            r.exposure_gbp = abs(r.position_size) * r.latest_price * rate
+
+            # % of capital = exposure / account NAV
+            if account_value_gbp and account_value_gbp > 0:
+                r.pct_of_capital = (r.exposure_gbp / account_value_gbp) * 100
+
+            # Loss to 9 DMA: how much the position would lose if price drops to 9 DMA
+            if r.dma_9 is not None and r.latest_price > r.dma_9:
+                price_drop = r.latest_price - r.dma_9
+                r.loss_to_9dma = price_drop * abs(r.position_size) * rate
+            elif r.dma_9 is not None:
+                # Already below 9 DMA — show the current unrealised loss from 9 DMA
+                price_drop = r.latest_price - r.dma_9
+                r.loss_to_9dma = price_drop * abs(r.position_size) * rate
+
+            # Loss to 21 DMA: same logic for 21 DMA
+            if r.dma_21 is not None and r.latest_price > r.dma_21:
+                price_drop = r.latest_price - r.dma_21
+                r.loss_to_21dma = price_drop * abs(r.position_size) * rate
+            elif r.dma_21 is not None:
+                price_drop = r.latest_price - r.dma_21
+                r.loss_to_21dma = price_drop * abs(r.position_size) * rate
+
         print()
 
     finally:
