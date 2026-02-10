@@ -21,6 +21,7 @@ class IBPosition:
     symbol: str
     description: str
     sec_type: str
+    currency: str
     position: float
     avg_cost: float
     market_price: float | None
@@ -77,6 +78,7 @@ def fetch_positions(ib: IB, equity_only: bool = True) -> tuple[list[IBPosition],
                 symbol=contract.symbol,
                 description=contract.localSymbol or contract.symbol,
                 sec_type=sec_type,
+                currency=contract.currency or "",
                 position=pos.position,
                 avg_cost=pos.avgCost,
                 market_price=None,
@@ -90,6 +92,7 @@ def fetch_positions(ib: IB, equity_only: bool = True) -> tuple[list[IBPosition],
             symbol=contract.symbol,
             description=contract.localSymbol or contract.symbol,
             sec_type=sec_type,
+            currency=contract.currency or "",
             position=pos.position,
             avg_cost=pos.avgCost,
             market_price=None,
@@ -216,3 +219,34 @@ def fetch_all_historical(
         except Exception as e:
             print(f"  Warning: Could not fetch history for {pos.symbol}: {e}")
     return history
+
+
+def fetch_account_value(ib: IB) -> tuple[float | None, str]:
+    """Fetch total account value (NetLiquidation) from TWS (read-only).
+
+    Uses reqAccountSummary which is a read-only API call that works
+    even with the 'Read-Only API' checkbox enabled in TWS.
+
+    Returns (net_liquidation_value, base_currency).
+    """
+    try:
+        summary = ib.reqAccountSummary()
+        ib.sleep(2)  # Wait for data to arrive
+
+        net_liq = None
+        currency = ""
+        for av in summary:
+            if av.tag == "NetLiquidation" and av.currency:
+                try:
+                    net_liq = float(av.value)
+                    currency = av.currency
+                except (ValueError, TypeError):
+                    continue
+                break
+
+        ib.cancelAccountSummary()
+        return net_liq, currency
+
+    except Exception as e:
+        print(f"  Warning: Could not fetch account value: {e}")
+        return None, ""

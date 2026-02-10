@@ -25,7 +25,7 @@ from datetime import datetime
 from pathlib import Path
 
 from src.parser import parse_positions_file
-from src.prices import PriceData, fetch_price_data, compute_dmas_from_history
+from src.prices import PriceData, fetch_price_data, compute_dmas_from_history, fetch_fx_rates
 from src.formatter import format_results, format_csv, format_html
 
 
@@ -64,13 +64,13 @@ def run_csv_mode(args):
     print("Fetching price data via Yahoo Finance...\n")
 
     results = fetch_price_data(symbols, descriptions, position_sizes)
-    return results, excluded
+    return results, excluded, None
 
 
 def run_ib_mode(args):
     """Pull positions directly from IB TWS and fetch DMAs."""
     try:
-        from src.ib_client import connect, fetch_positions, fetch_all_historical
+        from src.ib_client import connect, fetch_positions, fetch_all_historical, fetch_account_value
     except ImportError:
         print(
             "Error: ib_async is required for --ib mode.\n"
@@ -100,6 +100,7 @@ def run_ib_mode(args):
         sys.exit(1)
 
     excluded = []
+    account_value_gbp = None
     try:
         print("Fetching portfolio positions...")
         positions, ib_excluded = fetch_positions(ib)
@@ -210,11 +211,57 @@ def run_ib_mode(args):
                         )
                 print()
 
+        # Fetch account NAV and compute GBP exposure for each position
+        print("Fetching account value...")
+        account_nav, account_ccy = fetch_account_value(ib)
+
+        # Collect all currencies that need FX conversion (positions + account)
+        currencies = {p.currency for p in positions if p.currency}
+        if account_ccy:
+            currencies.add(account_ccy)
+
+        if currencies - {"GBP"}:
+            print(f"Fetching FX rates for: {', '.join(sorted(currencies - {'GBP'}))}...")
+            fx_rates = fetch_fx_rates(currencies, target="GBP")
+            missing_fx = (currencies - {"GBP"}) - set(fx_rates.keys())
+            if missing_fx:
+                print(f"  Warning: Could not get FX rates for: {', '.join(sorted(missing_fx))}")
+        else:
+            fx_rates = {"GBP": 1.0}
+
+        # Convert account NAV to GBP
+        account_value_gbp = None
+        if account_nav is not None and account_ccy:
+            rate = fx_rates.get(account_ccy)
+            if rate is not None:
+                account_value_gbp = account_nav * rate
+                print(f"Account NAV: {account_ccy} {account_nav:,.0f}"
+                      f" (GBP {account_value_gbp:,.0f})")
+            else:
+                print(f"Account NAV: {account_ccy} {account_nav:,.0f}"
+                      f" (no FX rate to GBP)")
+
+        # Build currency lookup from positions
+        pos_currencies = {p.symbol: p.currency for p in positions}
+
+        # Set exposure and % capital on each result
+        for r in results:
+            if r.error or r.latest_price is None or r.position_size is None:
+                continue
+            ccy = pos_currencies.get(r.symbol, "")
+            r.currency = ccy
+            rate = fx_rates.get(ccy)
+            if rate is not None:
+                r.exposure_gbp = r.position_size * r.latest_price * rate
+                if account_value_gbp and account_value_gbp > 0:
+                    r.pct_of_capital = (r.exposure_gbp / account_value_gbp) * 100
+        print()
+
     finally:
         ib.disconnect()
         print("Disconnected from IB.\n")
 
-    return results, excluded
+    return results, excluded, account_value_gbp
 
 
 def main():
@@ -300,9 +347,9 @@ def main():
 
     # Run in appropriate mode
     if args.ib:
-        results, excluded = run_ib_mode(args)
+        results, excluded, account_value_gbp = run_ib_mode(args)
     else:
-        results, excluded = run_csv_mode(args)
+        results, excluded, account_value_gbp = run_csv_mode(args)
 
     # Output — multiple flags can be combined
     if args.html:
@@ -315,13 +362,13 @@ def main():
         else:
             html_path = reports_dir / Path(args.html).name
 
-        html = format_html(results, excluded=excluded)
+        html = format_html(results, excluded=excluded, account_value_gbp=account_value_gbp)
         html_path.write_text(html)
         print(f"HTML report saved to: {html_path}")
 
     if args.email:
         from src.emailer import send_report
-        html = format_html(results, excluded=excluded)
+        html = format_html(results, excluded=excluded, account_value_gbp=account_value_gbp)
         try:
             send_report(html, recipient=args.email_to)
             target = args.email_to or "(from EMAIL_TO env var)"
@@ -338,7 +385,8 @@ def main():
     else:
         # Always show the table to terminal (even alongside --html/--email)
         use_color = not args.no_color and sys.stdout.isatty()
-        print(format_results(results, use_color=use_color, excluded=excluded))
+        print(format_results(results, use_color=use_color, excluded=excluded,
+                             account_value_gbp=account_value_gbp))
 
 
 if __name__ == "__main__":

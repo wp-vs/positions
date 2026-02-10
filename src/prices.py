@@ -17,6 +17,9 @@ class PriceData:
     description: str = ""
     position_size: float | None = None
     close_date: str | None = None
+    exposure_gbp: float | None = None
+    pct_of_capital: float | None = None
+    currency: str = ""
     error: str | None = None
 
     @property
@@ -243,3 +246,31 @@ def _extract_price_data(
             description=description, position_size=position_size,
             error=str(e),
         )
+
+
+def fetch_fx_rates(currencies: set[str], target: str = "GBP") -> dict[str, float]:
+    """Fetch FX rates to convert each currency to the target currency via yfinance.
+
+    Returns {currency: rate} where rate * amount_in_currency = amount_in_target.
+    For example, if target='GBP' and currency='USD', rate ~0.79.
+    """
+    rates = {target: 1.0}
+    to_fetch = currencies - {target}
+
+    for ccy in to_fetch:
+        try:
+            # Try direct pair: e.g. USDGBP=X gives GBP per 1 USD
+            pair = f"{ccy}{target}=X"
+            hist = yf.Ticker(pair).history(period="2d")
+            if not hist.empty:
+                rates[ccy] = float(hist["Close"].iloc[-1])
+                continue
+            # Try inverse pair: e.g. GBPUSD=X gives USD per 1 GBP → invert
+            inv_pair = f"{target}{ccy}=X"
+            hist = yf.Ticker(inv_pair).history(period="2d")
+            if not hist.empty:
+                rates[ccy] = 1.0 / float(hist["Close"].iloc[-1])
+        except Exception:
+            pass  # Missing rate will be handled by caller
+
+    return rates
