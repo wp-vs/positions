@@ -6,11 +6,10 @@ Works with the TWS "Read-Only API" setting enabled.
 
 from __future__ import annotations
 
-import asyncio
 import pandas as pd
 from dataclasses import dataclass
 
-from ib_async import IB, Stock, Contract, util
+from ib_async import IB, Contract, util
 
 
 # Equity-like security types from IB
@@ -81,12 +80,15 @@ def fetch_positions(ib: IB, equity_only: bool = True) -> list[IBPosition]:
     if not positions:
         return positions
 
-    # Resolve full security names via qualifyContracts (read-only: uses reqContractDetails)
-    contracts_to_qualify = [p.contract for p in positions]
-    ib.qualifyContracts(*contracts_to_qualify)
+    # Resolve full security names via reqContractDetails (read-only)
+    # longName lives on ContractDetails, not on Contract itself
     for p in positions:
-        if p.contract.longName:
-            p.description = p.contract.longName
+        try:
+            details_list = ib.reqContractDetails(p.contract)
+            if details_list:
+                p.description = details_list[0].longName or p.description
+        except Exception:
+            pass  # keep the localSymbol/symbol fallback
 
     # Fetch live price snapshots (read-only market data request)
     _fetch_market_snapshots(ib, positions)
