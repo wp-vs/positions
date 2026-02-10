@@ -1,6 +1,6 @@
 # Position Price & DMA Monitor
 
-Reads a file of trading positions and fetches the latest price, previous close, and 9/21/50 day moving averages for all equities, ETFs, and CFDs. Highlights positions trading below the 9 DMA.
+Pulls trading positions (from IB TWS or a CSV file) and displays the latest price, previous close, and 9/21/50 day moving averages for all equities, ETFs, and CFDs. Highlights positions trading below the 9 DMA.
 
 ## Setup
 
@@ -9,6 +9,42 @@ pip install -r requirements.txt
 ```
 
 ## Usage
+
+### From IB TWS (recommended)
+
+Connects directly to TWS/IB Gateway via the API — pulls positions, live prices, and security names automatically.
+
+```bash
+# Connect to TWS paper trading (default port 7497)
+python run.py --ib
+
+# Connect to IB Gateway (live)
+python run.py --ib --port 4001
+
+# Use IB historical data for DMAs (instead of Yahoo Finance)
+python run.py --ib --ib-history
+
+# Custom connection
+python run.py --ib --host 127.0.0.1 --port 7496 --client-id 2
+```
+
+**TWS setup required**: Edit > Global Configuration > API > Settings:
+- Enable ActiveX and Socket Clients
+- Socket port: 7497 (paper) / 7496 (live)
+- Uncheck "Read-Only API" if you want full access
+
+**IB Gateway ports**: 4002 (paper) / 4001 (live)
+
+#### DMA data source
+
+By default `--ib` pulls positions and live prices from IB, then uses Yahoo Finance for the historical data needed to compute DMAs. Add `--ib-history` to use IB's own historical data instead:
+
+| Flag | Positions | Live Price | DMA History |
+|------|-----------|------------|-------------|
+| `--ib` | IB | IB | Yahoo Finance |
+| `--ib --ib-history` | IB | IB | IB |
+
+### From a CSV file
 
 ```bash
 # Use the sample positions file
@@ -19,61 +55,47 @@ python run.py /path/to/your/positions.csv
 
 # Output as CSV for further processing
 python run.py --csv positions.csv
-
-# Disable terminal colors
-python run.py --no-color
 ```
 
-## Input File Formats
+### Input file formats
 
-The tool accepts several formats:
+The CSV parser accepts several formats:
 
-### 1. Simple symbol list (one ticker per line)
+**Simple symbol list** (one ticker per line):
 ```
 AAPL
 MSFT
 SPY
-TSLA
 ```
 
-### 2. Standard CSV with headers
+**Standard CSV with headers**:
 ```csv
 Symbol,Description,Asset Class,Position,Avg Cost
 AAPL,APPLE INC,STK,100,178.50
 MSFT,MICROSOFT CORP,STK,50,380.25
-SPY,SPDR S&P 500 ETF,STK,200,450.00
 ```
 
-### 3. IB TWS Rebalance Export
-Export from TWS via the Rebalance Portfolio window (File > Export). The tool auto-detects the format.
-
-### 4. IB Activity Statement CSV
-Export an Activity Flex Query as CSV from Client Portal. The tool extracts the "Open Positions" section and filters to equities.
+**IB TWS exports**: Rebalance export, Activity Statement CSV, and page content exports are all auto-detected.
 
 ## Output
 
 ```
-Symbol    Latest  Prev Close     9 DMA    21 DMA    50 DMA  Status
-----------------------------------------------------------------------
-AAPL      178.72     177.15    179.84    176.32    174.50  BELOW 9 DMA (-0.6%)
-MSFT      415.30     413.50    412.80    408.20    401.15
-SPY       512.40     510.80    513.10    508.40    502.30  BELOW 9 DMA (-0.1%)
-----------------------------------------------------------------------
+Symbol   Name                       Pos    Latest  Prev Cls    9 DMA   21 DMA   50 DMA  Status
+-----------------------------------------------------------------------------------------------
+AAPL     APPLE INC                  100    178.72   177.15   179.84   176.32   174.50  BELOW 9 DMA (-0.6%)
+MSFT     MICROSOFT CORP              50    415.30   413.50   412.80   408.20   401.15
+SPY      SPDR S&P 500 ETF           200    512.40   510.80   513.10   508.40   502.30  BELOW 9 DMA (-0.1%)
+-----------------------------------------------------------------------------------------------
 Total positions: 3
 ALERT: 2 position(s) trading BELOW 9 DMA: AAPL, SPY
 ```
 
-Positions below the 9 DMA are highlighted in red in the terminal. Positions within 1% of the 9 DMA are shown in yellow.
+- Red: below 9 DMA
+- Yellow: within 1% of 9 DMA
 
-## Data Source
+## Data sources
 
-Price data is fetched via [yfinance](https://github.com/ranaroussi/yfinance) (Yahoo Finance). Data is typically delayed ~15 minutes for US equities.
-
-## Feeding positions from IB TWS
-
-You can manually export positions from TWS:
-1. **Quick method**: Right-click your portfolio/watchlist in TWS > Export Page Contents
-2. **Rebalance export**: Open Rebalance Portfolio window > click Export
-3. **Flex Query**: Client Portal > Reports > Flex Queries > create an Activity query with Open Positions, export as CSV
-
-Save/copy the file to the `data/` directory or pass the path directly to `run.py`.
+| Source | Latency | Notes |
+|--------|---------|-------|
+| IB TWS (`--ib`) | Real-time | Requires TWS/Gateway running with API enabled |
+| Yahoo Finance (default) | ~15 min delay | No setup needed, free |

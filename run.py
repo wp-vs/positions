@@ -2,11 +2,18 @@
 """Fetch latest prices and moving averages for trading positions.
 
 Usage:
-    python run.py                           # uses data/sample_positions.csv
-    python run.py positions.csv             # specify a positions file
-    python run.py /path/to/positions.csv    # absolute path
-    python run.py --csv positions.csv       # output as CSV
-    python run.py --no-color positions.csv  # disable color output
+    # From CSV file (default)
+    python run.py                               # uses data/sample_positions.csv
+    python run.py positions.csv                 # specify a positions file
+
+    # From IB TWS (pulls positions + live prices directly)
+    python run.py --ib                          # connect to TWS on default port 7497
+    python run.py --ib --port 4001              # connect to IB Gateway live
+    python run.py --ib --ib-history             # use IB for DMAs too (instead of yfinance)
+
+    # Output options
+    python run.py --csv                         # output as CSV
+    python run.py --no-color                    # disable color output
 """
 
 import argparse
@@ -14,40 +21,15 @@ import sys
 from pathlib import Path
 
 from src.parser import parse_positions_file
-from src.prices import fetch_price_data
+from src.prices import PriceData, fetch_price_data, compute_dmas_from_history
 from src.formatter import format_results, format_csv
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Fetch latest prices and DMAs for your trading positions.",
-        epilog="Supports IB TWS CSV exports, plain symbol lists, and standard CSVs.",
-    )
-    parser.add_argument(
-        "file",
-        nargs="?",
-        default=None,
-        help="Path to positions file (CSV or plain text list of symbols). "
-             "Defaults to data/sample_positions.csv",
-    )
-    parser.add_argument(
-        "--csv",
-        action="store_true",
-        help="Output results as CSV instead of formatted table",
-    )
-    parser.add_argument(
-        "--no-color",
-        action="store_true",
-        help="Disable colored output",
-    )
-
-    args = parser.parse_args()
-
-    # Resolve file path
+def run_csv_mode(args):
+    """Load positions from a CSV file and fetch prices via yfinance."""
     if args.file:
         file_path = Path(args.file)
         if not file_path.is_absolute():
-            # Try relative to CWD first, then relative to script dir
             if not file_path.exists():
                 alt = Path(__file__).parent / file_path
                 if alt.exists():
@@ -55,7 +37,6 @@ def main():
     else:
         file_path = Path(__file__).parent / "data" / "sample_positions.csv"
 
-    # Parse positions
     print(f"Reading positions from: {file_path}")
     try:
         positions = parse_positions_file(file_path)
@@ -68,11 +49,184 @@ def main():
         sys.exit(0)
 
     symbols = [p["symbol"] for p in positions]
-    print(f"Found {len(symbols)} position(s): {', '.join(symbols)}")
-    print("Fetching price data...\n")
+    descriptions = {p["symbol"]: p.get("description", "") for p in positions}
+    position_sizes = {
+        p["symbol"]: p["position"] for p in positions if "position" in p
+    }
 
-    # Fetch prices
-    results = fetch_price_data(symbols)
+    print(f"Found {len(symbols)} position(s): {', '.join(symbols)}")
+    print("Fetching price data via Yahoo Finance...\n")
+
+    return fetch_price_data(symbols, descriptions, position_sizes)
+
+
+def run_ib_mode(args):
+    """Pull positions directly from IB TWS and fetch DMAs."""
+    try:
+        from src.ib_client import connect, fetch_positions, fetch_all_historical
+    except ImportError:
+        print(
+            "Error: ib_async is required for --ib mode.\n"
+            "Install it with: pip install ib_async",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    host = args.host
+    port = args.port
+    client_id = args.client_id
+
+    print(f"Connecting to IB TWS/Gateway at {host}:{port} (clientId={client_id})...")
+    try:
+        ib = connect(host, port, client_id)
+    except Exception as e:
+        print(f"Error: Could not connect to TWS/Gateway: {e}", file=sys.stderr)
+        print(
+            "\nMake sure TWS or IB Gateway is running with API enabled:\n"
+            "  TWS: Edit > Global Configuration > API > Settings\n"
+            "       - Enable ActiveX and Socket Clients\n"
+            "       - Socket port: 7497 (paper) or 7496 (live)\n"
+            "  Gateway: port 4002 (paper) or 4001 (live)",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    try:
+        print("Fetching portfolio positions...")
+        positions = fetch_positions(ib)
+
+        if not positions:
+            print("No equity/ETF/CFD positions found in your IB account.")
+            ib.disconnect()
+            sys.exit(0)
+
+        print(f"Found {len(positions)} position(s):")
+        for p in positions:
+            price_str = f" @ {p.market_price:.2f}" if p.market_price else ""
+            print(f"  {p.symbol:<8} {p.description:<30} {p.position:>8.0f}{price_str}")
+        print()
+
+        if args.ib_history:
+            # Use IB historical data for DMAs
+            print("Fetching historical data from IB (this may take a moment)...")
+            history = fetch_all_historical(ib, positions)
+
+            results = []
+            for pos in positions:
+                if pos.symbol in history:
+                    result = compute_dmas_from_history(
+                        symbol=pos.symbol,
+                        hist=history[pos.symbol],
+                        close_col="close",
+                        latest_price=pos.market_price,
+                        description=pos.description,
+                        position_size=pos.position,
+                    )
+                else:
+                    result = PriceData(
+                        symbol=pos.symbol,
+                        latest_price=pos.market_price,
+                        close_price=None,
+                        dma_9=None, dma_21=None, dma_50=None,
+                        below_9dma=False,
+                        description=pos.description,
+                        position_size=pos.position,
+                        error=f"No historical data from IB for {pos.symbol}",
+                    )
+                results.append(result)
+            print()
+        else:
+            # Use yfinance for DMAs, IB for positions + live prices
+            symbols = [p.symbol for p in positions]
+            descriptions = {p.symbol: p.description for p in positions}
+            position_sizes = {p.symbol: p.position for p in positions}
+            live_prices = {
+                p.symbol: p.market_price for p in positions if p.market_price
+            }
+
+            print("Fetching historical data from Yahoo Finance for DMAs...\n")
+            results = fetch_price_data(symbols, descriptions, position_sizes)
+
+            # Override latest price with IB live price where available
+            for r in results:
+                if r.symbol in live_prices:
+                    r.latest_price = live_prices[r.symbol]
+                    if r.dma_9 is not None:
+                        r.below_9dma = r.latest_price < r.dma_9
+
+    finally:
+        ib.disconnect()
+        print("Disconnected from IB.\n")
+
+    return results
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Fetch latest prices and DMAs for your trading positions.",
+        epilog="Supports IB TWS live connection, CSV exports, and plain symbol lists.",
+    )
+
+    # Source options
+    source = parser.add_argument_group("data source")
+    source.add_argument(
+        "file",
+        nargs="?",
+        default=None,
+        help="Path to positions file (CSV or plain text symbol list). "
+             "Defaults to data/sample_positions.csv. Ignored when --ib is used.",
+    )
+    source.add_argument(
+        "--ib",
+        action="store_true",
+        help="Pull positions directly from IB TWS/Gateway instead of a file",
+    )
+    source.add_argument(
+        "--ib-history",
+        action="store_true",
+        help="Use IB historical data for DMAs (default: use Yahoo Finance for DMAs)",
+    )
+
+    # IB connection options
+    ib_conn = parser.add_argument_group("IB connection (used with --ib)")
+    ib_conn.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="TWS/Gateway host (default: 127.0.0.1)",
+    )
+    ib_conn.add_argument(
+        "--port",
+        type=int,
+        default=7497,
+        help="TWS/Gateway port (default: 7497 for TWS paper trading)",
+    )
+    ib_conn.add_argument(
+        "--client-id",
+        type=int,
+        default=1,
+        help="API client ID (default: 1)",
+    )
+
+    # Output options
+    output = parser.add_argument_group("output")
+    output.add_argument(
+        "--csv",
+        action="store_true",
+        help="Output results as CSV instead of formatted table",
+    )
+    output.add_argument(
+        "--no-color",
+        action="store_true",
+        help="Disable colored output",
+    )
+
+    args = parser.parse_args()
+
+    # Run in appropriate mode
+    if args.ib:
+        results = run_ib_mode(args)
+    else:
+        results = run_csv_mode(args)
 
     # Output
     if args.csv:

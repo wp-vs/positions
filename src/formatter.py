@@ -13,8 +13,16 @@ RESET = "\033[0m"
 
 def _fmt_price(val: float | None) -> str:
     if val is None:
-        return "   N/A"
-    return f"{val:>10.2f}"
+        return "      N/A"
+    return f"{val:>9.2f}"
+
+
+def _fmt_pos(val: float | None) -> str:
+    if val is None:
+        return "     "
+    if val == int(val):
+        return f"{int(val):>5}"
+    return f"{val:>5.0f}"
 
 
 def _pct_from_dma(price: float | None, dma: float | None) -> str:
@@ -34,13 +42,27 @@ def format_results(results: list[PriceData], use_color: bool = True) -> str:
     if not results:
         return "No positions to display."
 
+    # Check if we have descriptions/positions to show
+    has_desc = any(r.description for r in results if not r.error)
+    has_pos = any(r.position_size is not None for r in results if not r.error)
+
     lines = []
 
-    # Header
-    header = (
-        f"{'Symbol':<8} {'Latest':>10} {'Prev Close':>10} "
-        f"{'9 DMA':>10} {'21 DMA':>10} {'50 DMA':>10}  Status"
-    )
+    # Build header
+    parts = []
+    parts.append(f"{'Symbol':<8}")
+    if has_desc:
+        parts.append(f"{'Name':<24}")
+    if has_pos:
+        parts.append(f"{'Pos':>5}")
+    parts.append(f"{'Latest':>9}")
+    parts.append(f"{'Prev Cls':>9}")
+    parts.append(f"{'9 DMA':>9}")
+    parts.append(f"{'21 DMA':>9}")
+    parts.append(f"{'50 DMA':>9}")
+    parts.append(f"  Status")
+
+    header = " ".join(parts)
     separator = "-" * len(header)
 
     if use_color:
@@ -71,15 +93,21 @@ def format_results(results: list[PriceData], use_color: bool = True) -> str:
                 status = f"Near 9 DMA (+{pct:.1f}%)"
                 row_color = YELLOW
 
-        row = (
-            f"{r.symbol:<8} "
-            f"{_fmt_price(r.latest_price)} "
-            f"{_fmt_price(r.close_price)} "
-            f"{_fmt_price(r.dma_9)} "
-            f"{_fmt_price(r.dma_21)} "
-            f"{_fmt_price(r.dma_50)}  "
-            f"{status}"
-        )
+        row_parts = []
+        row_parts.append(f"{r.symbol:<8}")
+        if has_desc:
+            desc = (r.description[:22] + "..") if len(r.description) > 24 else r.description
+            row_parts.append(f"{desc:<24}")
+        if has_pos:
+            row_parts.append(f"{_fmt_pos(r.position_size)}")
+        row_parts.append(f"{_fmt_price(r.latest_price)}")
+        row_parts.append(f"{_fmt_price(r.close_price)}")
+        row_parts.append(f"{_fmt_price(r.dma_9)}")
+        row_parts.append(f"{_fmt_price(r.dma_21)}")
+        row_parts.append(f"{_fmt_price(r.dma_50)}")
+        row_parts.append(f"  {status}")
+
+        row = " ".join(row_parts)
 
         if use_color and row_color:
             lines.append(f"{row_color}{row}{RESET}")
@@ -118,12 +146,14 @@ def format_results(results: list[PriceData], use_color: bool = True) -> str:
 
 def format_csv(results: list[PriceData]) -> str:
     """Format results as CSV for further processing."""
-    lines = ["Symbol,Latest Price,Prev Close,9 DMA,21 DMA,50 DMA,Below 9 DMA"]
+    lines = ["Symbol,Name,Position,Latest Price,Prev Close,9 DMA,21 DMA,50 DMA,Below 9 DMA"]
     for r in results:
         if r.error:
             continue
         lines.append(
             f"{r.symbol},"
+            f"\"{r.description}\","
+            f"{r.position_size or ''},"
             f"{r.latest_price or ''},"
             f"{r.close_price or ''},"
             f"{r.dma_9 or ''},"
