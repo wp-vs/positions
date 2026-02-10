@@ -13,6 +13,9 @@ Usage:
 
     # Output options
     python run.py --csv                         # output as CSV
+    python run.py --html report.html            # save as styled HTML file
+    python run.py --email                       # email report (configure SMTP via .env)
+    python run.py --email --email-to a@b.com    # email to specific address
     python run.py --no-color                    # disable color output
 """
 
@@ -22,7 +25,7 @@ from pathlib import Path
 
 from src.parser import parse_positions_file
 from src.prices import PriceData, fetch_price_data, compute_dmas_from_history
-from src.formatter import format_results, format_csv
+from src.formatter import format_results, format_csv, format_html
 
 
 def run_csv_mode(args):
@@ -216,6 +219,25 @@ def main():
         help="Output results as CSV instead of formatted table",
     )
     output.add_argument(
+        "--html",
+        nargs="?",
+        const="report.html",
+        default=None,
+        metavar="FILE",
+        help="Save results as styled HTML (default: report.html)",
+    )
+    output.add_argument(
+        "--email",
+        action="store_true",
+        help="Email the HTML report (configure SMTP via environment variables, see .env.example)",
+    )
+    output.add_argument(
+        "--email-to",
+        default=None,
+        metavar="ADDR",
+        help="Override recipient email address (default: EMAIL_TO env var)",
+    )
+    output.add_argument(
         "--no-color",
         action="store_true",
         help="Disable colored output",
@@ -229,10 +251,30 @@ def main():
     else:
         results = run_csv_mode(args)
 
-    # Output
+    # Output — multiple flags can be combined
+    if args.html:
+        html = format_html(results)
+        Path(args.html).write_text(html)
+        print(f"HTML report saved to: {args.html}")
+
+    if args.email:
+        from src.emailer import send_report
+        html = format_html(results)
+        try:
+            send_report(html, recipient=args.email_to)
+            target = args.email_to or "(from EMAIL_TO env var)"
+            print(f"Report emailed to: {target}")
+        except ValueError as e:
+            print(f"Email config error: {e}", file=sys.stderr)
+            sys.exit(1)
+        except Exception as e:
+            print(f"Failed to send email: {e}", file=sys.stderr)
+            sys.exit(1)
+
     if args.csv:
         print(format_csv(results))
     else:
+        # Always show the table to terminal (even alongside --html/--email)
         use_color = not args.no_color and sys.stdout.isatty()
         print(format_results(results, use_color=use_color))
 

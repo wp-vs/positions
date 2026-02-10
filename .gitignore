@@ -21,6 +21,10 @@ env/
 .DS_Store
 Thumbs.db
 
+# Generated reports
+report.html
+*.html
+
 # Data files (user positions - don't commit sensitive data)
 positions/data/*.csv
 positions/data/*.xlsx

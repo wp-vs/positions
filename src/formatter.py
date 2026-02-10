@@ -1,5 +1,6 @@
-"""Format price/DMA data for terminal output."""
+"""Format price/DMA data for terminal, HTML, and CSV output."""
 
+from datetime import datetime
 from .prices import PriceData
 
 # ANSI color codes
@@ -162,3 +163,195 @@ def format_csv(results: list[PriceData]) -> str:
             f"{r.below_9dma}"
         )
     return "\n".join(lines)
+
+
+def _html_price(val: float | None) -> str:
+    if val is None:
+        return "N/A"
+    return f"{val:.2f}"
+
+
+def format_html(results: list[PriceData]) -> str:
+    """Format results as a self-contained HTML page with styled table."""
+    if not results:
+        return "<html><body><p>No positions to display.</p></body></html>"
+
+    has_desc = any(r.description for r in results if not r.error)
+    has_pos = any(r.position_size is not None for r in results if not r.error)
+
+    valid = [r for r in results if not r.error]
+    errors = [r for r in results if r.error]
+    below_9dma = [r for r in valid if r.below_9dma]
+
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # Build table headers
+    headers = ["Symbol"]
+    if has_desc:
+        headers.append("Name")
+    if has_pos:
+        headers.append("Pos")
+    headers.extend(["Latest", "Prev Close", "9 DMA", "21 DMA", "50 DMA", "Status"])
+
+    header_cells = "".join(f"<th>{h}</th>" for h in headers)
+
+    # Build table rows
+    rows_html = []
+    for r in valid:
+        status = ""
+        row_class = ""
+
+        if r.below_9dma:
+            status = "BELOW 9 DMA" + _pct_from_dma(r.latest_price, r.dma_9)
+            row_class = "below-9dma"
+        elif r.dma_9 is not None and r.latest_price is not None:
+            pct = ((r.latest_price - r.dma_9) / r.dma_9) * 100
+            if pct < 1.0:
+                status = f"Near 9 DMA (+{pct:.1f}%)"
+                row_class = "near-9dma"
+
+        cells = [f"<td class='symbol'>{r.symbol}</td>"]
+        if has_desc:
+            cells.append(f"<td class='name'>{r.description}</td>")
+        if has_pos:
+            pos_str = f"{int(r.position_size)}" if r.position_size and r.position_size == int(r.position_size) else f"{r.position_size or ''}"
+            cells.append(f"<td class='num'>{pos_str}</td>")
+        cells.append(f"<td class='num'>{_html_price(r.latest_price)}</td>")
+        cells.append(f"<td class='num'>{_html_price(r.close_price)}</td>")
+        cells.append(f"<td class='num'>{_html_price(r.dma_9)}</td>")
+        cells.append(f"<td class='num'>{_html_price(r.dma_21)}</td>")
+        cells.append(f"<td class='num'>{_html_price(r.dma_50)}</td>")
+        cells.append(f"<td class='status'>{status}</td>")
+
+        class_attr = f" class='{row_class}'" if row_class else ""
+        rows_html.append(f"<tr{class_attr}>{''.join(cells)}</tr>")
+
+    # Alert section
+    alert_html = ""
+    if below_9dma:
+        symbols = ", ".join(r.symbol for r in below_9dma)
+        alert_html = f"""
+        <div class="alert">
+            {len(below_9dma)} position(s) trading BELOW 9 DMA: <strong>{symbols}</strong>
+        </div>"""
+
+    # Errors section
+    errors_html = ""
+    if errors:
+        err_items = "".join(f"<li>{e.symbol}: {e.error}</li>" for e in errors)
+        errors_html = f"""
+        <div class="errors">
+            <p>Could not fetch data:</p>
+            <ul>{err_items}</ul>
+        </div>"""
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Position DMA Report - {timestamp}</title>
+<style>
+    body {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        max-width: 1200px;
+        margin: 20px auto;
+        padding: 0 20px;
+        background: #f8f9fa;
+        color: #212529;
+    }}
+    h1 {{
+        font-size: 1.4em;
+        color: #343a40;
+        border-bottom: 2px solid #dee2e6;
+        padding-bottom: 8px;
+    }}
+    .timestamp {{
+        color: #6c757d;
+        font-size: 0.85em;
+        margin-bottom: 16px;
+    }}
+    table {{
+        width: 100%;
+        border-collapse: collapse;
+        background: #fff;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        font-size: 0.9em;
+    }}
+    th {{
+        background: #343a40;
+        color: #fff;
+        padding: 10px 12px;
+        text-align: left;
+        font-weight: 600;
+    }}
+    td {{
+        padding: 8px 12px;
+        border-bottom: 1px solid #e9ecef;
+    }}
+    td.num {{
+        text-align: right;
+        font-family: 'SF Mono', 'Consolas', 'Monaco', monospace;
+    }}
+    td.symbol {{
+        font-weight: 600;
+    }}
+    td.status {{
+        font-weight: 600;
+        font-size: 0.85em;
+    }}
+    tr:hover {{
+        background: #f1f3f5;
+    }}
+    tr.below-9dma {{
+        background: #fff5f5;
+    }}
+    tr.below-9dma td.status {{
+        color: #c92a2a;
+    }}
+    tr.near-9dma {{
+        background: #fffbeb;
+    }}
+    tr.near-9dma td.status {{
+        color: #e67700;
+    }}
+    .summary {{
+        margin-top: 12px;
+        color: #495057;
+        font-size: 0.9em;
+    }}
+    .alert {{
+        margin-top: 12px;
+        padding: 10px 14px;
+        background: #fff5f5;
+        border-left: 4px solid #c92a2a;
+        color: #c92a2a;
+        font-size: 0.9em;
+    }}
+    .errors {{
+        margin-top: 12px;
+        padding: 10px 14px;
+        background: #f8f9fa;
+        border-left: 4px solid #adb5bd;
+        color: #6c757d;
+        font-size: 0.85em;
+    }}
+    .errors ul {{
+        margin: 4px 0 0 0;
+        padding-left: 20px;
+    }}
+</style>
+</head>
+<body>
+    <h1>Position DMA Report</h1>
+    <div class="timestamp">Generated: {timestamp}</div>
+    {alert_html}
+    <table>
+        <thead><tr>{header_cells}</tr></thead>
+        <tbody>
+            {''.join(rows_html)}
+        </tbody>
+    </table>
+    <div class="summary">Total positions: {len(valid)}</div>
+    {errors_html}
+</body>
+</html>"""
