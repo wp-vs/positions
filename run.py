@@ -9,7 +9,7 @@ Usage:
     # From IB TWS (pulls positions + live prices directly)
     python run.py --ib                          # connect to TWS on default port 7497
     python run.py --ib --port 4001              # connect to IB Gateway live
-    python run.py --ib --ib-history             # use IB for DMAs too (instead of yfinance)
+    python run.py --ib --ib-history             # use IB for DMAs too (instead of EODHD)
 
     # Output options
     python run.py --csv                         # output as CSV
@@ -30,7 +30,7 @@ from src.formatter import format_results, format_csv, format_html
 
 
 def run_csv_mode(args):
-    """Load positions from a CSV file and fetch prices via yfinance."""
+    """Load positions from a CSV file and fetch prices via EODHD."""
     if args.file:
         file_path = Path(args.file)
         if not file_path.is_absolute():
@@ -61,7 +61,7 @@ def run_csv_mode(args):
     if excluded:
         print(f"Skipped {len(excluded)} non-equity position(s)")
     print(f"Found {len(symbols)} equity position(s): {', '.join(symbols)}")
-    print("Fetching price data via Yahoo Finance...\n")
+    print("Fetching price data via EODHD...\n")
 
     results = fetch_price_data(symbols, descriptions, position_sizes)
     return results, excluded, None
@@ -154,8 +154,8 @@ def run_ib_mode(args):
                 results.append(result)
             print()
         else:
-            # Use yfinance for DMAs, IB for positions + live prices
-            from src.exchanges import ib_to_yahoo_symbol
+            # Use EODHD for DMAs, IB for positions + live prices
+            from src.exchanges import ib_to_eodhd_symbol
 
             symbols = [p.symbol for p in positions]
             descriptions = {p.symbol: p.description for p in positions}
@@ -164,24 +164,22 @@ def run_ib_mode(args):
                 p.symbol: p.market_price for p in positions if p.market_price
             }
 
-            # Map IB symbols to Yahoo Finance tickers using exchange info
-            yahoo_symbols = {}
+            # Map IB symbols to EODHD tickers using exchange info
+            eodhd_symbols = {}
             for p in positions:
-                yf_sym = ib_to_yahoo_symbol(
+                eodhd_sym = ib_to_eodhd_symbol(
                     p.symbol,
                     exchange=p.contract.exchange or "",
                     currency=p.contract.currency or "",
                     primary_exchange=getattr(p.contract, "primaryExchange", "") or "",
                 )
-                if yf_sym != p.symbol:
-                    yahoo_symbols[p.symbol] = yf_sym
+                eodhd_symbols[p.symbol] = eodhd_sym
 
-            if yahoo_symbols:
-                mapped = [f"{s} -> {y}" for s, y in yahoo_symbols.items()]
-                print(f"Mapped non-US symbols for Yahoo Finance: {', '.join(mapped)}")
+            mapped = [f"{s} -> {e}" for s, e in eodhd_symbols.items()]
+            print(f"EODHD symbols: {', '.join(mapped)}")
 
-            print("Fetching historical data from Yahoo Finance for DMAs...\n")
-            results = fetch_price_data(symbols, descriptions, position_sizes, yahoo_symbols)
+            print("Fetching historical data from EODHD for DMAs...\n")
+            results = fetch_price_data(symbols, descriptions, position_sizes, eodhd_symbols)
 
             # Override latest price with IB live price where available
             for r in results:
@@ -190,13 +188,13 @@ def run_ib_mode(args):
                     if r.dma_9 is not None:
                         r.below_9dma = r.latest_price < r.dma_9
 
-            # Fall back to IB historical data for symbols yfinance couldn't find
+            # Fall back to IB historical data for symbols EODHD couldn't find
             failed = [r for r in results if r.error]
             if failed:
                 failed_symbols = {r.symbol for r in failed}
                 failed_positions = [p for p in positions if p.symbol in failed_symbols]
                 print(f"Falling back to IB historical data for {len(failed)} symbol(s) "
-                      f"yfinance couldn't resolve: {', '.join(sorted(failed_symbols))}")
+                      f"EODHD couldn't resolve: {', '.join(sorted(failed_symbols))}")
                 ib_history = fetch_all_historical(ib, failed_positions)
 
                 for i, r in enumerate(results):
@@ -313,7 +311,7 @@ def main():
     source.add_argument(
         "--ib-history",
         action="store_true",
-        help="Use IB historical data for DMAs (default: use Yahoo Finance for DMAs)",
+        help="Use IB historical data for DMAs (default: use EODHD for DMAs)",
     )
 
     # IB connection options
